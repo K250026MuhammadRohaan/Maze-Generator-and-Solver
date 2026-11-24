@@ -1,106 +1,120 @@
 // compare.h - Module 3: generate-and-solve demo and algorithm comparison.
 #pragma once
-#include <chrono>
-#include <iomanip>
-#include <iostream>
-#include <memory>
+#include <stdio.h>
+#include <time.h>
 #include "maze.h"
 #include "solvers.h"
 #include "ui.h"
+#include "utils.h"
 
-// Open rooms with exactly one open neighbour.
+// Each test is repeated many times and averaged, because one run is too fast to time.
+const int GEN_REPS = 200;
+const int SOLVE_REPS = 1000;
+
+// Counts rooms that have exactly one open neighbour (a dead end).
 inline int countDeadEnds(const Maze& m) {
     int n = 0;
-    for (int r = 1; r < m.rows(); r += 2)
+    for (int r = 1; r < m.rows(); r += 2) {
         for (int c = 1; c < m.cols(); c += 2) {
             if (m.isWall(r, c)) continue;
-            int deg = (int)m.isOpen(r - 1, c) + (int)m.isOpen(r + 1, c) +
-                      (int)m.isOpen(r, c - 1) + (int)m.isOpen(r, c + 1);
-            if (deg == 1) ++n;
+            int neighbours = 0;
+            if (m.isOpen(r - 1, c)) ++neighbours;
+            if (m.isOpen(r + 1, c)) ++neighbours;
+            if (m.isOpen(r, c - 1)) ++neighbours;
+            if (m.isOpen(r, c + 1)) ++neighbours;
+            if (neighbours == 1) ++n;
         }
+    }
     return n;
 }
 
+// Average time (microseconds) to generate a maze with the chosen generator.
 inline double timeGeneration(Maze& m, int generator, int reps) {
-    auto t0 = std::chrono::steady_clock::now();
+    clock_t begin = clock();
     for (int i = 0; i < reps; ++i) generateMaze(m, generator);
-    auto t1 = std::chrono::steady_clock::now();
-    return std::chrono::duration<double, std::micro>(t1 - t0).count() / reps;
-}
-
-inline void printSolveRow(const char* label, const SolveResult& r) {
-    std::cout << "  " << std::left << std::setw(6) << label << std::right
-              << std::setw(8) << (r.found ? "yes" : "no")
-              << std::setw(10) << (r.found ? r.pathLength : 0)
-              << std::setw(10) << r.explored
-              << std::setw(12) << std::fixed << std::setprecision(2) << r.micros << "\n";
+    return averageMicros(begin, clock(), reps);
 }
 
 inline void printSolveHeader() {
-    std::cout << "  " << std::left << std::setw(6) << "Solver" << std::right << std::setw(8) << "Found"
-              << std::setw(10) << "PathLen" << std::setw(10) << "Explored" << std::setw(12) << "Time(us)" << "\n";
+    printf("  %-6s%8s%10s%10s%12s\n", "Solver", "Found", "PathLen", "Explored", "Time(us)");
 }
 
-// Menu option: generate one maze, show it, solve with both solvers.
+inline void printSolveRow(const char* label, const SolveResult& r) {
+    printf("  %-6s%8s%10d%10d%12.2f\n", label, r.found ? "yes" : "no",
+           r.found ? r.pathLength : 0, r.explored, r.micros);
+}
+
+// Menu option: generate one maze, show it, solve it with both solvers.
 inline void generateAndSolve() {
     MazeConfig cfg;
     if (!askMazeConfig(cfg, true)) return;
-    Maze m = buildMaze(cfg);
-    std::cout << "\nGenerated maze (" << m.rows() << "x" << m.cols() << ", " << generatorName(cfg.generator)
-              << (cfg.loops ? ", with loops" : "") << "):\n\n";
+    Maze m(cfg.rows, cfg.cols);
+    buildMaze(m, cfg);
+    printf("\nGenerated maze (%dx%d, %s%s):\n\n", m.rows(), m.cols(),
+           generatorName(cfg.generator), cfg.loops ? ", with loops" : "");
     m.display();
 
-    SolveResult bfs = solveBFS(m, 100), dfs = solveDFS(m, 100);
-    std::unique_ptr<char[]> mark(new char[m.rows() * m.cols()]);
+    SolveResult bfs, dfs;
+    solveBFS(m, bfs, SOLVE_REPS);
+    solveDFS(m, dfs, SOLVE_REPS);
+
+    char* mark = new char[m.rows() * m.cols()];
     if (bfs.found) {
-        markPath(m, bfs, mark.get());
-        std::cout << "\nBFS path (shortest):\n\n";
-        m.display(nullptr, mark.get());
+        markPath(m, bfs, mark);
+        printf("\nBFS path (shortest):\n\n");
+        m.display(NULL, mark);
     }
     if (dfs.found) {
-        markPath(m, dfs, mark.get());
-        std::cout << "\nDFS path:\n\n";
-        m.display(nullptr, mark.get());
+        markPath(m, dfs, mark);
+        printf("\nDFS path:\n\n");
+        m.display(NULL, mark);
     }
-    std::cout << "\n";
+    delete[] mark;
+
+    printf("\n");
     printSolveHeader();
     printSolveRow("BFS", bfs);
     printSolveRow("DFS", dfs);
 }
 
-// Menu option: compare generators across sizes and solvers on the same mazes.
+// Menu option: compare the two generators, then the two solvers.
 inline void compareAlgorithms() {
-    std::cout << "\n=== Generation comparison (average of 20 runs) ===\n";
-    std::cout << "  " << std::left << std::setw(10) << "Size" << std::right << std::setw(14) << "DFS (us)"
-              << std::setw(14) << "Kruskal (us)" << std::setw(12) << "DFS dead" << std::setw(14) << "Kruskal dead" << "\n";
-    const int sizes[] = {11, 21, 31, 51, 101};
-    for (int s : sizes) {
+    printf("\n=== Generation comparison (average of %d runs) ===\n", GEN_REPS);
+    printf("  %-10s%14s%14s%12s%14s\n", "Size", "DFS (us)", "Kruskal (us)", "DFS dead", "Kruskal dead");
+    const int sizes[5] = {11, 21, 31, 51, 101};
+    for (int i = 0; i < 5; ++i) {
+        int s = sizes[i];
         Maze m(s, s);
-        double td = timeGeneration(m, GEN_DFS, 20);
-        int dd = countDeadEnds(m);
-        double tk = timeGeneration(m, GEN_KRUSKAL, 20);
-        int kd = countDeadEnds(m);
-        std::cout << "  " << std::left << std::setw(10) << (std::to_string(s) + "x" + std::to_string(s))
-                  << std::right << std::fixed << std::setprecision(1) << std::setw(14) << td
-                  << std::setw(14) << tk << std::setw(12) << dd << std::setw(14) << kd << "\n";
+        double dfsTime = timeGeneration(m, GEN_DFS, GEN_REPS);
+        int dfsDead = countDeadEnds(m);
+        double kruskalTime = timeGeneration(m, GEN_KRUSKAL, GEN_REPS);
+        int kruskalDead = countDeadEnds(m);
+        printf("  %3dx%-6d%14.1f%14.1f%12d%14d\n", s, s, dfsTime, kruskalTime, dfsDead, kruskalDead);
     }
 
-    int diff = readInt("\nSolver comparison size - 1) 11x11  2) 21x21  3) 31x31: ", 1, 3);
-    int size = diff == 1 ? 11 : diff == 2 ? 21 : 31;
-    std::cout << "\n=== Solver comparison on " << size << "x" << size
-              << " mazes (each row pair solves the same maze, 50 runs averaged) ===\n";
+    int choice = readInt("\nSolver comparison size - 1) 11x11  2) 21x21  3) 31x31: ", 1, 3);
+    int size = 11 + 10 * (choice - 1);
+    printf("\n=== Solver comparison on %dx%d mazes (each pair solves the same maze, %d runs averaged) ===\n",
+           size, size, SOLVE_REPS);
     for (int gen = GEN_DFS; gen <= GEN_KRUSKAL; ++gen) {
         for (int loops = 0; loops <= 1; ++loops) {
             MazeConfig cfg;
-            cfg.rows = cfg.cols = size; cfg.generator = gen; cfg.loops = loops == 1;
-            Maze m = buildMaze(cfg);
-            std::cout << "\n  Generator: " << generatorName(gen)
-                      << (loops ? " + loops" : " (perfect maze)") << "\n";
+            cfg.rows = size;
+            cfg.cols = size;
+            cfg.generator = gen;
+            cfg.loops = (loops == 1);
+            Maze m(size, size);
+            buildMaze(m, cfg);
+
+            SolveResult bfs, dfs;
+            solveBFS(m, bfs, SOLVE_REPS);
+            solveDFS(m, dfs, SOLVE_REPS);
+            printf("\n  Generator: %s%s\n", generatorName(gen), loops ? " + loops" : " (perfect maze)");
             printSolveHeader();
-            printSolveRow("BFS", solveBFS(m, 50));
-            printSolveRow("DFS", solveDFS(m, 50));
+            printSolveRow("BFS", bfs);
+            printSolveRow("DFS", dfs);
         }
     }
-    std::cout << "\nNote: in a perfect maze both solvers give the same path length;\n"
-                 "with loops BFS is never longer than DFS.\n";
+    printf("\nNote: in a perfect maze both solvers give the same path length;\n"
+           "with loops BFS is never longer than DFS.\n");
 }
